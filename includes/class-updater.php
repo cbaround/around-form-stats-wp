@@ -23,9 +23,10 @@ final class Updater
             'around-form-stats'
         );
 
-        // Prefer GitHub Releases (tag like v1.0.2) for update metadata.
+        // Prefer GitHub Release zip assets (around-form-stats.zip).
         $checker->getVcsApi()->enableReleaseAssets();
 
+        // Optional override only — not required when the GitHub repo is public.
         $token = self::github_token();
         if ($token !== '') {
             $checker->setAuthentication($token);
@@ -38,8 +39,6 @@ final class Updater
             return AROUND_FORM_STATS_GITHUB_TOKEN;
         }
 
-        $stored = Options::get('github_token', '');
-
-        return is_string($stored) ? $stored : '';
+        return '';
     }
 }
