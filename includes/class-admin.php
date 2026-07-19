@@ -84,6 +84,14 @@ final class Admin
             Heartbeat::send();
             self::redirect_with_notice('heartbeat_sent');
         }
+
+        if ($action === 'sync_history') {
+            $result = HistoryBackfill::run(true);
+            self::redirect_with_notice(
+                $result['ok'] ? 'history_synced' : 'history_sync_failed',
+                $result['message']
+            );
+        }
     }
 
     private static function redirect_with_notice(string $code, string $message = ''): void
@@ -186,6 +194,21 @@ final class Admin
                             <th><?php echo esc_html__('Plugin version', 'around-form-stats'); ?></th>
                             <td><?php echo esc_html(AFS_VERSION); ?></td>
                         </tr>
+                        <tr>
+                            <th><?php echo esc_html__('History sync', 'around-form-stats'); ?></th>
+                            <td>
+                                <?php
+                                $history_done = (string) ($settings['history_backfill_completed_at'] ?? '');
+                                echo $history_done !== ''
+                                    ? esc_html(sprintf(
+                                        /* translators: %s: datetime */
+                                        __('Completed %s', 'around-form-stats'),
+                                        self::format_time($history_done)
+                                    ))
+                                    : esc_html__('Pending (runs after the site is approved)', 'around-form-stats');
+                                ?>
+                            </td>
+                        </tr>
                     </tbody>
                 </table>
 
@@ -199,6 +222,11 @@ final class Admin
                         <?php wp_nonce_field('afs_admin_action'); ?>
                         <input type="hidden" name="afs_action" value="heartbeat" />
                         <?php submit_button(__('Send heartbeat', 'around-form-stats'), 'secondary', 'submit', false); ?>
+                    </form>
+                    <form method="post" style="display:inline-block; margin-right: 8px;">
+                        <?php wp_nonce_field('afs_admin_action'); ?>
+                        <input type="hidden" name="afs_action" value="sync_history" />
+                        <?php submit_button(__('Sync history now', 'around-form-stats'), 'primary', 'submit', false); ?>
                     </form>
                     <form method="post" style="display:inline-block;">
                         <?php wp_nonce_field('afs_admin_action'); ?>
@@ -292,6 +320,10 @@ final class Admin
                 return __('Queue flush attempted.', 'around-form-stats');
             case 'heartbeat_sent':
                 return __('Heartbeat sent.', 'around-form-stats');
+            case 'history_synced':
+                return __('History sync completed.', 'around-form-stats');
+            case 'history_sync_failed':
+                return __('History sync failed.', 'around-form-stats');
             default:
                 return $code;
         }

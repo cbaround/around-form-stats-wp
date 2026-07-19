@@ -77,25 +77,32 @@ final class Cli extends WP_CLI_Command
         WP_CLI::log('Last heartbeat: ' . ((string) $settings['last_heartbeat_at'] ?: '—'));
         WP_CLI::log('Last error: ' . ((string) $settings['last_error'] ?: '—'));
         WP_CLI::log('History sync: ' . ((string) $settings['history_backfill_completed_at'] ?: 'pending'));
+        WP_CLI::log('History schema: ' . ((string) ($settings['history_backfill_schema'] ?? '0')));
         WP_CLI::log('Quform: ' . (QuformAdapter::quform_version() ?: 'not detected'));
         WP_CLI::log('Plugin: ' . AFS_VERSION);
     }
 
     /**
-     * Sync historical Quform daily counts to the API.
+     * Sync historical Quform forms and daily counts to the API.
+     *
+     * ## OPTIONS
+     *
+     * [--force]
+     * : Re-run even if a previous sync completed.
      *
      * @when after_wp_load
+     *
+     * @param array<int, string> $args
+     * @param array<string, string> $assoc_args
      */
-    public function backfill(): void
+    public function backfill(array $args, array $assoc_args): void
     {
         if (! Options::is_connected()) {
             WP_CLI::error('Site is not connected.');
         }
 
-        // Allow a forced re-run from CLI.
-        Options::update(['history_backfill_completed_at' => '']);
-
-        $result = HistoryBackfill::run();
+        $force = isset($assoc_args['force']);
+        $result = HistoryBackfill::run($force);
         if (! $result['ok']) {
             WP_CLI::error($result['message']);
         }

@@ -37,6 +37,7 @@ final class Options
             'last_error' => '',
             'last_error_at' => '',
             'history_backfill_completed_at' => '',
+            'history_backfill_schema' => 0,
         ];
     }
 

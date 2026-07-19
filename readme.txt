@@ -3,7 +3,7 @@ Contributors: around
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 1.0.2
+Stable tag: 1.0.4
 License: GPLv2 or later
 
 Push Quform submission metadata to Around Form Stats. No personal form field data is transmitted.
@@ -47,6 +47,14 @@ A Quform submission that passed validation and completed normal form processing.
 Events stay in a local queue and are retried by WP-Cron and on the next successful opportunity.
 
 == Changelog ==
+
+= 1.0.4 =
+* Sync all Quform forms and historical daily submission counts after connect/approval
+* Re-run history sync for already-connected sites after upgrade
+* Add Settings → Sync history now and `wp around-form-stats backfill --force`
+
+= 1.0.3 =
+* Initial automatic Quform history backfill support
 
 = 1.0.2 =
 * Add GitHub Releases updates on the WordPress Plugins screen

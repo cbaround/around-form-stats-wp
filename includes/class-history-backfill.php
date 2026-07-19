@@ -6,23 +6,32 @@ namespace AFS;
 
 /**
  * Aggregates historical Quform entry counts and pushes them to the API once
- * the site is connected and approved.
+ * the site is connected and approved. Also registers all Quform forms.
  */
 final class HistoryBackfill
 {
     public const CRON_HOOK = 'afs_history_backfill';
+
+    /** Bump to force already-connected sites to re-sync after plugin upgrades. */
+    public const SCHEMA_VERSION = 2;
 
     private const CHUNK_SIZE = 200;
 
     public static function boot(): void
     {
         add_action(self::CRON_HOOK, [self::class, 'run']);
+        add_action('admin_init', [self::class, 'maybe_migrate_and_schedule'], 30);
     }
 
     public static function schedule(): void
     {
         if (! wp_next_scheduled(self::CRON_HOOK)) {
-            wp_schedule_single_event(time() + 30, self::CRON_HOOK);
+            wp_schedule_single_event(time() + 15, self::CRON_HOOK);
+        }
+
+        // Nudge WP-Cron so it does not wait for an unrelated page view.
+        if (function_exists('spawn_cron')) {
+            spawn_cron(time());
         }
     }
 
@@ -32,6 +41,27 @@ final class HistoryBackfill
         if ($timestamp) {
             wp_unschedule_event($timestamp, self::CRON_HOOK);
         }
+    }
+
+    /**
+     * For existing connected sites: upgrade schema clears the completion flag
+     * so all forms + historical counts are pushed again (fill_missing).
+     */
+    public static function maybe_migrate_and_schedule(): void
+    {
+        if (! Options::is_connected()) {
+            return;
+        }
+
+        $schema = (int) Options::get('history_backfill_schema', 0);
+        if ($schema < self::SCHEMA_VERSION) {
+            Options::update([
+                'history_backfill_schema' => self::SCHEMA_VERSION,
+                'history_backfill_completed_at' => '',
+            ]);
+        }
+
+        self::maybe_schedule();
     }
 
     public static function maybe_schedule(): void
@@ -48,9 +78,9 @@ final class HistoryBackfill
     }
 
     /**
-     * @return array{ok: bool, message: string, imported?: int, skipped?: int}
+     * @return array{ok: bool, message: string, imported?: int, skipped?: int, forms?: int}
      */
-    public static function run(): array
+    public static function run(bool $force = false): array
     {
         if (! Options::is_connected()) {
             return [
@@ -59,28 +89,39 @@ final class HistoryBackfill
             ];
         }
 
-        if ((string) Options::get('history_backfill_completed_at', '') !== '') {
+        if (! $force && (string) Options::get('history_backfill_completed_at', '') !== '') {
             return [
                 'ok' => true,
                 'message' => 'History backfill already completed.',
                 'imported' => 0,
                 'skipped' => 0,
+                'forms' => 0,
             ];
+        }
+
+        if ($force) {
+            Options::update(['history_backfill_completed_at' => '']);
         }
 
         $status = (string) Options::get('site_status', '');
         if ($status !== '' && $status !== 'active') {
-            // Wait until the site is approved; heartbeat will reschedule.
+            // Wait until the site is approved; heartbeat / admin will reschedule.
+            self::schedule();
+
             return [
                 'ok' => false,
                 'message' => 'Site is not active yet. History will sync after approval.',
             ];
         }
 
-        $rows = self::aggregate_daily_counts();
-        if ($rows === null) {
+        $forms_table = self::forms_table();
+        $form_names = self::resolve_form_names($forms_table);
+        $rows = self::aggregate_daily_counts($form_names);
+
+        if ($rows === null && $form_names === []) {
             Options::update([
                 'history_backfill_completed_at' => gmdate('c'),
+                'history_backfill_schema' => self::SCHEMA_VERSION,
             ]);
 
             return [
@@ -88,36 +129,75 @@ final class HistoryBackfill
                 'message' => 'Quform history unavailable; marked complete.',
                 'imported' => 0,
                 'skipped' => 0,
+                'forms' => 0,
             ];
         }
 
-        if ($rows === []) {
+        $rows = $rows ?? [];
+        $forms_payload = [];
+        foreach ($form_names as $form_id => $form_name) {
+            $forms_payload[] = [
+                'form_id' => (string) $form_id,
+                'form_name' => $form_name !== '' ? $form_name : ('Form ' . $form_id),
+            ];
+        }
+
+        if ($rows === [] && $forms_payload === []) {
             Options::update([
                 'history_backfill_completed_at' => gmdate('c'),
+                'history_backfill_schema' => self::SCHEMA_VERSION,
             ]);
 
             return [
                 'ok' => true,
-                'message' => 'No historical Quform entries found.',
+                'message' => 'No Quform forms or entries found.',
                 'imported' => 0,
                 'skipped' => 0,
+                'forms' => 0,
             ];
         }
 
         $client = new ApiClient();
         $imported = 0;
         $skipped = 0;
-        $chunks = array_chunk($rows, self::CHUNK_SIZE);
+        $forms_synced = 0;
 
-        foreach ($chunks as $chunk) {
+        // Register every form first (including forms with zero submissions).
+        if ($forms_payload !== []) {
+            foreach (array_chunk($forms_payload, self::CHUNK_SIZE) as $chunk) {
+                $result = $client->post('/api/v1/submissions/history', [
+                    'forms' => $chunk,
+                    'rows' => [],
+                    'source' => 'quform_forms',
+                    'mode' => 'fill_missing',
+                ], true);
+
+                if (! $result['ok']) {
+                    self::schedule();
+
+                    return [
+                        'ok' => false,
+                        'message' => $result['error'] !== '' ? $result['error'] : 'Form catalog sync failed.',
+                        'imported' => $imported,
+                        'skipped' => $skipped,
+                        'forms' => $forms_synced,
+                    ];
+                }
+
+                $body = is_array($result['body']) ? $result['body'] : [];
+                $forms_synced += (int) ($body['forms'] ?? count($chunk));
+            }
+        }
+
+        foreach (array_chunk($rows, self::CHUNK_SIZE) as $chunk) {
             $result = $client->post('/api/v1/submissions/history', [
                 'rows' => $chunk,
+                'forms' => [],
                 'source' => 'quform_entries',
                 'mode' => 'fill_missing',
             ], true);
 
             if (! $result['ok']) {
-                // Retry later (e.g. still pending, network blip).
                 self::schedule();
 
                 return [
@@ -125,6 +205,7 @@ final class HistoryBackfill
                     'message' => $result['error'] !== '' ? $result['error'] : 'History sync failed.',
                     'imported' => $imported,
                     'skipped' => $skipped,
+                    'forms' => $forms_synced,
                 ];
             }
 
@@ -135,26 +216,47 @@ final class HistoryBackfill
 
         Options::update([
             'history_backfill_completed_at' => gmdate('c'),
+            'history_backfill_schema' => self::SCHEMA_VERSION,
             'last_success_at' => gmdate('c'),
         ]);
 
         return [
             'ok' => true,
-            'message' => sprintf('Synced historical counts (%d imported, %d skipped).', $imported, $skipped),
+            'message' => sprintf(
+                'Synced %d forms and historical counts (%d imported, %d skipped).',
+                $forms_synced,
+                $imported,
+                $skipped
+            ),
             'imported' => $imported,
             'skipped' => $skipped,
+            'forms' => $forms_synced,
         ];
     }
 
-    /**
-     * @return list<array{date: string, form_id: string, form_name: string, submission_count: int}>|null
-     */
-    private static function aggregate_daily_counts(): ?array
+    private static function forms_table(): string
     {
         global $wpdb;
 
-        $entries_table = $wpdb->prefix . 'quform_entries';
-        $forms_table = $wpdb->prefix . 'quform_forms';
+        return $wpdb->prefix . 'quform_forms';
+    }
+
+    private static function entries_table(): string
+    {
+        global $wpdb;
+
+        return $wpdb->prefix . 'quform_entries';
+    }
+
+    /**
+     * @param array<string, string> $form_names
+     * @return list<array{date: string, form_id: string, form_name: string, submission_count: int}>|null
+     */
+    private static function aggregate_daily_counts(array $form_names): ?array
+    {
+        global $wpdb;
+
+        $entries_table = self::entries_table();
 
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
         $entries_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $entries_table));
@@ -162,9 +264,6 @@ final class HistoryBackfill
             return null;
         }
 
-        $form_names = self::resolve_form_names($forms_table);
-
-        // Prefer created_at (Quform 2); fall back to submitted if present.
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
         $columns = $wpdb->get_col("DESCRIBE {$entries_table}", 0);
         if (! is_array($columns) || $columns === []) {
@@ -179,19 +278,33 @@ final class HistoryBackfill
             return null;
         }
 
-        $status_filter = in_array('status', $columns, true)
-            ? "AND (status = 'normal' OR status = '' OR status IS NULL)"
-            : '';
+        $has_status = in_array('status', $columns, true);
 
-        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-        $results = $wpdb->get_results(
-            "SELECT form_id, DATE({$date_column}) AS day, COUNT(*) AS submission_count
-             FROM {$entries_table}
-             WHERE {$date_column} IS NOT NULL {$status_filter}
-             GROUP BY form_id, DATE({$date_column})
-             ORDER BY day ASC",
-            ARRAY_A
-        );
+        // Prefer excluding trash only; fall back to no status filter if that yields nothing.
+        $queries = [];
+        if ($has_status) {
+            $queries[] = "AND (status IS NULL OR status = '' OR LOWER(status) NOT IN ('trash','deleted','spam'))";
+            $queries[] = '';
+        } else {
+            $queries[] = '';
+        }
+
+        $results = [];
+        foreach ($queries as $status_filter) {
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+            $results = $wpdb->get_results(
+                "SELECT form_id, DATE({$date_column}) AS day, COUNT(*) AS submission_count
+                 FROM {$entries_table}
+                 WHERE {$date_column} IS NOT NULL AND {$date_column} != '0000-00-00 00:00:00' {$status_filter}
+                 GROUP BY form_id, DATE({$date_column})
+                 ORDER BY day ASC",
+                ARRAY_A
+            );
+
+            if (is_array($results) && $results !== []) {
+                break;
+            }
+        }
 
         if (! is_array($results)) {
             return [];
@@ -201,7 +314,7 @@ final class HistoryBackfill
         foreach ($results as $row) {
             $form_id = (string) ($row['form_id'] ?? '');
             $day = (string) ($row['day'] ?? '');
-            if ($form_id === '' || $day === '') {
+            if ($form_id === '' || $day === '' || $day === '0000-00-00') {
                 continue;
             }
 
@@ -230,20 +343,23 @@ final class HistoryBackfill
 
         $names = [];
 
-        if (class_exists('Quform_Repository') && function_exists('quform')) {
+        if (function_exists('quform')) {
             try {
-                $repo = quform()->getService('repository');
-                if (is_object($repo) && method_exists($repo, 'allForms')) {
-                    $forms = $repo->allForms();
-                    if (is_array($forms)) {
-                        foreach ($forms as $form) {
-                            if (! is_array($form)) {
-                                continue;
-                            }
-                            $id = (string) ($form['id'] ?? '');
-                            $name = (string) ($form['name'] ?? '');
-                            if ($id !== '') {
-                                $names[$id] = $name !== '' ? $name : ('Form ' . $id);
+                $quform = quform();
+                if (is_object($quform) && method_exists($quform, 'getService')) {
+                    $repo = $quform->getService('repository');
+                    if (is_object($repo) && method_exists($repo, 'allForms')) {
+                        $forms = $repo->allForms(null);
+                        if (is_array($forms)) {
+                            foreach ($forms as $form) {
+                                if (! is_array($form)) {
+                                    continue;
+                                }
+                                $id = (string) ($form['id'] ?? '');
+                                $name = (string) ($form['name'] ?? '');
+                                if ($id !== '') {
+                                    $names[$id] = $name !== '' ? $name : ('Form ' . $id);
+                                }
                             }
                         }
                     }
@@ -287,9 +403,10 @@ final class HistoryBackfill
             if (is_array($forms)) {
                 foreach ($forms as $form) {
                     $id = (string) ($form['id'] ?? '');
-                    $config = maybe_unserialize((string) ($form['config'] ?? ''));
+                    $raw = (string) ($form['config'] ?? '');
+                    $config = maybe_unserialize($raw);
                     if (! is_array($config)) {
-                        $decoded = json_decode((string) ($form['config'] ?? ''), true);
+                        $decoded = json_decode($raw, true);
                         $config = is_array($decoded) ? $decoded : [];
                     }
                     $name = is_array($config) ? (string) ($config['name'] ?? '') : '';

@@ -103,6 +103,7 @@ final class Enrollment
             'site_uuid' => '',
             'site_status' => 'disconnected',
             'history_backfill_completed_at' => '',
+            'history_backfill_schema' => 0,
         ]);
         HistoryBackfill::unschedule();
     }
