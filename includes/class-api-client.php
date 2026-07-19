@@ -41,8 +41,10 @@ final class ApiClient
             $headers['Authorization'] = 'Bearer ' . $token;
         }
 
+        $timeout = str_contains($path, '/submissions/history') ? 60 : 15;
+
         $response = wp_remote_post($base . $path, [
-            'timeout' => 15,
+            'timeout' => $timeout,
             'headers' => $headers,
             'body' => wp_json_encode($body),
             'data_format' => 'body',

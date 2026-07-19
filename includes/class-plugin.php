@@ -26,6 +26,7 @@ final class Plugin
     {
         Heartbeat::unschedule();
         Queue::unschedule();
+        HistoryBackfill::unschedule();
     }
 
     public function boot(): void
@@ -35,6 +36,7 @@ final class Plugin
         Admin::boot();
         Queue::boot();
         Heartbeat::boot();
+        HistoryBackfill::boot();
         Enrollment::boot();
         QuformAdapter::boot();
 

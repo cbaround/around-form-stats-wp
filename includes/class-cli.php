@@ -76,8 +76,31 @@ final class Cli extends WP_CLI_Command
         WP_CLI::log('Last success: ' . ((string) $settings['last_success_at'] ?: '—'));
         WP_CLI::log('Last heartbeat: ' . ((string) $settings['last_heartbeat_at'] ?: '—'));
         WP_CLI::log('Last error: ' . ((string) $settings['last_error'] ?: '—'));
+        WP_CLI::log('History sync: ' . ((string) $settings['history_backfill_completed_at'] ?: 'pending'));
         WP_CLI::log('Quform: ' . (QuformAdapter::quform_version() ?: 'not detected'));
         WP_CLI::log('Plugin: ' . AFS_VERSION);
+    }
+
+    /**
+     * Sync historical Quform daily counts to the API.
+     *
+     * @when after_wp_load
+     */
+    public function backfill(): void
+    {
+        if (! Options::is_connected()) {
+            WP_CLI::error('Site is not connected.');
+        }
+
+        // Allow a forced re-run from CLI.
+        Options::update(['history_backfill_completed_at' => '']);
+
+        $result = HistoryBackfill::run();
+        if (! $result['ok']) {
+            WP_CLI::error($result['message']);
+        }
+
+        WP_CLI::success($result['message']);
     }
 
     /**

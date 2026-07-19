@@ -36,6 +36,7 @@ final class Options
             'last_heartbeat_at' => '',
             'last_error' => '',
             'last_error_at' => '',
+            'history_backfill_completed_at' => '',
         ];
     }
 

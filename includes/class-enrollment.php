@@ -80,14 +80,15 @@ final class Enrollment
             'last_success_at' => gmdate('c'),
         ]);
 
-        // Flush any events queued before connection.
+        // Flush any events queued before connection, then sync Quform history.
         Queue::process();
         Heartbeat::send();
+        HistoryBackfill::maybe_schedule();
 
         $status = (string) ($body['status'] ?? 'pending');
         $message = $status === 'pending'
-            ? 'Connected. Waiting for approval in Around Form Stats.'
-            : 'Connected.';
+            ? 'Connected. Waiting for approval in Around Form Stats. History will sync after approval.'
+            : 'Connected. Historical form counts will sync automatically.';
 
         return [
             'ok' => true,
@@ -101,6 +102,8 @@ final class Enrollment
             'site_token' => '',
             'site_uuid' => '',
             'site_status' => 'disconnected',
+            'history_backfill_completed_at' => '',
         ]);
+        HistoryBackfill::unschedule();
     }
 }

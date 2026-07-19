@@ -45,10 +45,18 @@ final class Heartbeat
 
         if ($result['ok']) {
             $status = is_array($result['body']) ? (string) ($result['body']['status'] ?? '') : '';
+            $previous = (string) Options::get('site_status', '');
             Options::update(array_filter([
                 'last_heartbeat_at' => gmdate('c'),
                 'site_status' => $status !== '' ? $status : null,
             ], static fn ($value) => $value !== null));
+
+            // Kick off history sync once (or again after approval).
+            if (($status === 'active' || $previous === 'active')
+                && (string) Options::get('history_backfill_completed_at', '') === ''
+            ) {
+                HistoryBackfill::maybe_schedule();
+            }
         }
     }
 }
