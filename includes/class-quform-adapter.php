@@ -7,10 +7,8 @@ namespace AFS;
 /**
  * Isolates Quform-specific hooks so the rest of the plugin stays provider-agnostic.
  *
- * Spike notes (verify against installed Quform versions):
- * - Prefer post-validation / successfully-processed hooks.
- * - Confirm AJAX + non-AJAX forms both fire.
- * - Confirm spam/discarded submissions do not fire.
+ * Quform 2.x runs `quform_post_process` as a filter:
+ *   add_filter('quform_post_process', fn (array $result, Quform_Form $form) => $result, 10, 2);
  */
 final class QuformAdapter
 {
@@ -19,8 +17,8 @@ final class QuformAdapter
 
     public static function boot(): void
     {
-        // Quform 2.x: fired after a form is successfully processed.
-        add_action('quform_post_process', [self::class, 'on_post_process'], 10, 2);
+        // Quform 2.x: filter after a form is successfully processed.
+        add_filter('quform_post_process', [self::class, 'on_post_process'], 10, 2);
 
         // Optional fallback for older/alternate Quform builds.
         if (apply_filters('afs_enable_quform_form_submitted_hook', false)) {
@@ -29,11 +27,22 @@ final class QuformAdapter
     }
 
     /**
-     * @param mixed $form
+     * @param array<string, mixed> $result
+     * @param mixed                $form
+     * @return array<string, mixed>
      */
-    public static function on_post_process($form, $unused = null): void
+    public static function on_post_process($result, $form = null)
     {
+        // Defensive: some callers may pass only the form.
+        if ($form === null && (is_object($result) || (is_array($result) && isset($result['id'])))) {
+            self::capture($result);
+
+            return is_array($result) ? $result : [];
+        }
+
         self::capture($form);
+
+        return is_array($result) ? $result : [];
     }
 
     /**
@@ -49,6 +58,10 @@ final class QuformAdapter
      */
     private static function capture($form): void
     {
+        if ($form === null) {
+            return;
+        }
+
         $form_id = self::resolve_form_id($form);
         if ($form_id === '') {
             return;
@@ -145,10 +158,15 @@ final class QuformAdapter
                     return $name;
                 }
             }
-            if (method_exists($form, 'get_name')) {
-                $name = (string) $form->get_name();
-                if ($name !== '') {
-                    return $name;
+            if (method_exists($form, 'config') ) {
+                // Quform_Form::config('name')
+                try {
+                    $name = (string) $form->config('name');
+                    if ($name !== '') {
+                        return $name;
+                    }
+                } catch (\Throwable $e) {
+                    // ignore
                 }
             }
             if (isset($form->name) && is_string($form->name) && $form->name !== '') {
