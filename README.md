@@ -19,14 +19,16 @@ From the Laravel dashboard, create an enrollment key, then either:
 2. Define in `wp-config.php`:
 
 ```php
-define('AROUND_FORM_STATS_API_URL', 'http://127.0.0.1:8000');
+define('AROUND_FORM_STATS_API_URL', 'https://around-form-stats-production-qbotdt.laravel.cloud');
 define('AROUND_FORM_STATS_ENROLLMENT_KEY', 'afs_...');
 ```
 
 3. Or WP-CLI:
 
 ```bash
-wp around-form-stats connect --key="afs_..." --api-url="http://127.0.0.1:8000"
+wp around-form-stats connect \
+  --key="afs_..." \
+  --api-url="https://around-form-stats-production-qbotdt.laravel.cloud"
 wp around-form-stats status
 wp around-form-stats flush
 wp around-form-stats heartbeat
