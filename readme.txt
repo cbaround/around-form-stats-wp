@@ -3,7 +3,7 @@ Contributors: around
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 1.0.4
+Stable tag: 1.0.5
 License: GPLv2 or later
 
 Push Quform submission metadata to Around Form Stats. No personal form field data is transmitted.
@@ -47,6 +47,9 @@ A Quform submission that passed validation and completed normal form processing.
 Events stay in a local queue and are retried by WP-Cron and on the next successful opportunity.
 
 == Changelog ==
+
+= 1.0.5 =
+* Fix history sync failing with "The rows field is required" when registering forms
 
 = 1.0.4 =
 * Sync all Quform forms and historical daily submission counts after connect/approval

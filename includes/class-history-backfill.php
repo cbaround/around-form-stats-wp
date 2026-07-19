@@ -13,7 +13,7 @@ final class HistoryBackfill
     public const CRON_HOOK = 'afs_history_backfill';
 
     /** Bump to force already-connected sites to re-sync after plugin upgrades. */
-    public const SCHEMA_VERSION = 2;
+    public const SCHEMA_VERSION = 3;
 
     private const CHUNK_SIZE = 200;
 
@@ -162,40 +162,58 @@ final class HistoryBackfill
         $skipped = 0;
         $forms_synced = 0;
 
-        // Register every form first (including forms with zero submissions).
-        if ($forms_payload !== []) {
-            foreach (array_chunk($forms_payload, self::CHUNK_SIZE) as $chunk) {
-                $result = $client->post('/api/v1/submissions/history', [
-                    'forms' => $chunk,
-                    'rows' => [],
-                    'source' => 'quform_forms',
-                    'mode' => 'fill_missing',
-                ], true);
-
-                if (! $result['ok']) {
-                    self::schedule();
-
-                    return [
-                        'ok' => false,
-                        'message' => $result['error'] !== '' ? $result['error'] : 'Form catalog sync failed.',
-                        'imported' => $imported,
-                        'skipped' => $skipped,
-                        'forms' => $forms_synced,
-                    ];
-                }
-
-                $body = is_array($result['body']) ? $result['body'] : [];
-                $forms_synced += (int) ($body['forms'] ?? count($chunk));
+        // Never send rows: [] — older API builds reject empty required arrays with
+        // "The rows field is required." Attach the form catalog to the first rows
+        // chunk, or register forms via zero-count rows when there is no history.
+        if ($rows === [] && $forms_payload !== []) {
+            $today = gmdate('Y-m-d');
+            foreach ($forms_payload as $form) {
+                $rows[] = [
+                    'date' => $today,
+                    'form_id' => $form['form_id'],
+                    'form_name' => $form['form_name'],
+                    'submission_count' => 0,
+                ];
             }
         }
 
-        foreach (array_chunk($rows, self::CHUNK_SIZE) as $chunk) {
-            $result = $client->post('/api/v1/submissions/history', [
-                'rows' => $chunk,
-                'forms' => [],
+        $row_chunks = array_values(array_chunk($rows, self::CHUNK_SIZE));
+        $form_chunks = array_values(array_chunk($forms_payload, self::CHUNK_SIZE));
+        $total_chunks = max(count($row_chunks), count($form_chunks), 1);
+
+        for ($index = 0; $index < $total_chunks; $index++) {
+            $chunk_rows = $row_chunks[$index] ?? [];
+            $chunk_forms = $form_chunks[$index] ?? [];
+
+            // Guarantee a non-empty rows array for APIs that still require it.
+            if ($chunk_rows === [] && $chunk_forms !== []) {
+                $today = gmdate('Y-m-d');
+                foreach ($chunk_forms as $form) {
+                    $chunk_rows[] = [
+                        'date' => $today,
+                        'form_id' => $form['form_id'],
+                        'form_name' => $form['form_name'],
+                        'submission_count' => 0,
+                    ];
+                }
+            }
+
+            if ($chunk_rows === []) {
+                continue;
+            }
+
+            $payload = [
+                'rows' => $chunk_rows,
                 'source' => 'quform_entries',
                 'mode' => 'fill_missing',
-            ], true);
+            ];
+
+            if ($chunk_forms !== []) {
+                $payload['forms'] = $chunk_forms;
+                $payload['source'] = 'quform_forms_and_entries';
+            }
+
+            $result = $client->post('/api/v1/submissions/history', $payload, true);
 
             if (! $result['ok']) {
                 self::schedule();
@@ -212,6 +230,7 @@ final class HistoryBackfill
             $body = is_array($result['body']) ? $result['body'] : [];
             $imported += (int) ($body['imported'] ?? 0);
             $skipped += (int) ($body['skipped'] ?? 0);
+            $forms_synced += (int) ($body['forms'] ?? count($chunk_forms));
         }
 
         Options::update([
