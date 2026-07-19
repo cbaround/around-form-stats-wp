@@ -31,6 +31,7 @@ final class Plugin
     public function boot(): void
     {
         Options::boot();
+        Updater::boot();
         Admin::boot();
         Queue::boot();
         Heartbeat::boot();

@@ -11,6 +11,36 @@ ln -s "$(pwd)" /path/to/wordpress/wp-content/plugins/around-form-stats
 
 Activate in WP Admin, then **Settings → Around Form Stats**.
 
+## Updates (WordPress Plugins screen)
+
+This plugin checks **GitHub Releases** on [cbaround/around-form-stats-wp](https://github.com/cbaround/around-form-stats-wp) and shows updates under **Plugins → Installed Plugins**, same as wordpress.org plugins.
+
+Because the repo is private, add a GitHub token with `repo` (or fine-grained read access) in `wp-config.php`:
+
+```php
+define('AROUND_FORM_STATS_GITHUB_TOKEN', 'ghp_...');
+```
+
+### How to publish a new version
+
+1. Bump `Version` in `around-form-stats.php`, `AFS_VERSION`, and `Stable tag` in `readme.txt`
+2. Commit and push to `main`
+3. Create a GitHub release with tag `vX.Y.Z` and a zip asset named `around-form-stats.zip`:
+
+```bash
+VERSION=1.0.2
+rm -rf /tmp/around-form-stats /tmp/around-form-stats.zip
+mkdir -p /tmp/around-form-stats
+rsync -a --exclude .git --exclude local-origin ./ /tmp/around-form-stats/
+cd /tmp && zip -r around-form-stats.zip around-form-stats
+gh release create "v${VERSION}" /tmp/around-form-stats.zip \
+  --repo cbaround/around-form-stats-wp \
+  --title "v${VERSION}" \
+  --notes "See readme.txt changelog."
+```
+
+WordPress sites will then see **Update now** for that version.
+
 ## Connect
 
 From the Laravel dashboard, create an enrollment key, then either:
