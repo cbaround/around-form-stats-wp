@@ -103,7 +103,7 @@ final class QuformAdapter
             return null;
         }
 
-        return [
+        $meta = [
             'event_id' => Uuid::v4(),
             'form_id' => $form_id,
             'form_name' => self::resolve_form_name($form, $form_id),
@@ -113,6 +113,28 @@ final class QuformAdapter
             'provider' => 'quform',
             'provider_version' => self::quform_version(),
         ];
+
+        return array_merge($meta, self::attribution_fields($form));
+    }
+
+    /**
+     * @param mixed $form
+     * @return array{referrer_host?: string, utm_source?: string}
+     */
+    private static function attribution_fields($form): array
+    {
+        $attribution = Attribution::from_quform($form);
+        $fields = [];
+
+        if ($attribution['referrer_host'] !== '') {
+            $fields['referrer_host'] = $attribution['referrer_host'];
+        }
+
+        if ($attribution['utm_source'] !== null && $attribution['utm_source'] !== '') {
+            $fields['utm_source'] = $attribution['utm_source'];
+        }
+
+        return $fields;
     }
 
     /**

@@ -13,7 +13,7 @@ final class HistoryBackfill
     public const CRON_HOOK = 'afs_history_backfill';
 
     /** Bump to force already-connected sites to re-sync after plugin upgrades. */
-    public const SCHEMA_VERSION = 3;
+    public const SCHEMA_VERSION = 4;
 
     private const CHUNK_SIZE = 200;
 
@@ -78,7 +78,7 @@ final class HistoryBackfill
     }
 
     /**
-     * @return array{ok: bool, message: string, imported?: int, skipped?: int, forms?: int}
+     * @return array{ok: bool, message: string, imported?: int, skipped?: int, forms?: int, sources_imported?: int, sources_skipped?: int}
      */
     public static function run(bool $force = false): array
     {
@@ -233,6 +233,43 @@ final class HistoryBackfill
             $forms_synced += (int) ($body['forms'] ?? count($chunk_forms));
         }
 
+        $source_imported = 0;
+        $source_skipped = 0;
+        $source_rows = self::aggregate_source_counts($form_names) ?? [];
+
+        foreach (array_chunk($source_rows, self::CHUNK_SIZE) as $chunk_sources) {
+            if ($chunk_sources === []) {
+                continue;
+            }
+
+            $result = $client->post('/api/v1/submissions/history', [
+                'rows' => [],
+                'source_rows' => $chunk_sources,
+                'source' => 'quform_referring_urls',
+                'mode' => 'fill_missing',
+            ], true);
+
+            if (! $result['ok']) {
+                self::schedule();
+
+                return [
+                    'ok' => false,
+                    'message' => $result['error'] !== ''
+                        ? $result['error']
+                        : 'History source sync failed.',
+                    'imported' => $imported,
+                    'skipped' => $skipped,
+                    'forms' => $forms_synced,
+                    'sources_imported' => $source_imported,
+                    'sources_skipped' => $source_skipped,
+                ];
+            }
+
+            $body = is_array($result['body']) ? $result['body'] : [];
+            $source_imported += (int) ($body['sources_imported'] ?? 0);
+            $source_skipped += (int) ($body['sources_skipped'] ?? 0);
+        }
+
         Options::update([
             'history_backfill_completed_at' => gmdate('c'),
             'history_backfill_schema' => self::SCHEMA_VERSION,
@@ -242,14 +279,18 @@ final class HistoryBackfill
         return [
             'ok' => true,
             'message' => sprintf(
-                'Synced %d forms and historical counts (%d imported, %d skipped).',
+                'Synced %d forms, historical counts (%d imported, %d skipped), and sources (%d imported, %d skipped).',
                 $forms_synced,
                 $imported,
-                $skipped
+                $skipped,
+                $source_imported,
+                $source_skipped
             ),
             'imported' => $imported,
             'skipped' => $skipped,
             'forms' => $forms_synced,
+            'sources_imported' => $source_imported,
+            'sources_skipped' => $source_skipped,
         ];
     }
 
@@ -351,6 +392,101 @@ final class HistoryBackfill
         }
 
         return $rows;
+    }
+
+    /**
+     * Aggregate historical referring hosts from Quform entry metadata.
+     *
+     * @param array<string, string> $form_names
+     * @return list<array{date: string, form_id: string, form_name: string, referrer_host: string, utm_source?: string, submission_count: int}>|null
+     */
+    private static function aggregate_source_counts(array $form_names): ?array
+    {
+        global $wpdb;
+
+        $entries_table = self::entries_table();
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $entries_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $entries_table));
+        if ($entries_exists !== $entries_table) {
+            return null;
+        }
+
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $columns = $wpdb->get_col("DESCRIBE {$entries_table}", 0);
+        if (! is_array($columns) || $columns === []) {
+            return null;
+        }
+
+        $date_column = in_array('created_at', $columns, true)
+            ? 'created_at'
+            : (in_array('submitted', $columns, true) ? 'submitted' : null);
+
+        if ($date_column === null || ! in_array('referring_url', $columns, true)) {
+            return [];
+        }
+
+        $has_status = in_array('status', $columns, true);
+        $status_filter = $has_status
+            ? "AND (status IS NULL OR status = '' OR LOWER(status) NOT IN ('trash','deleted','spam'))"
+            : '';
+
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $results = $wpdb->get_results(
+            "SELECT form_id, DATE({$date_column}) AS day, referring_url, COUNT(*) AS submission_count
+             FROM {$entries_table}
+             WHERE {$date_column} IS NOT NULL
+               AND {$date_column} != '0000-00-00 00:00:00'
+               {$status_filter}
+             GROUP BY form_id, DATE({$date_column}), referring_url
+             ORDER BY day ASC",
+            ARRAY_A
+        );
+
+        if (! is_array($results)) {
+            return [];
+        }
+
+        $site_host = Attribution::host_from_url(home_url('/'));
+        $grouped = [];
+
+        foreach ($results as $row) {
+            $form_id = (string) ($row['form_id'] ?? '');
+            $day = (string) ($row['day'] ?? '');
+            $count = (int) ($row['submission_count'] ?? 0);
+            if ($form_id === '' || $day === '' || $day === '0000-00-00' || $count < 1) {
+                continue;
+            }
+
+            $raw = (string) ($row['referring_url'] ?? '');
+            $attribution = Attribution::from_raw_url($raw, $site_host);
+            $host = $attribution['referrer_host'];
+            $utm = $attribution['utm_source'] ?? null;
+            $key = $form_id . '|' . $day . '|' . $host . '|' . (string) $utm;
+
+            if (! isset($grouped[$key])) {
+                $name = $form_names[$form_id] ?? '';
+                if ($name === '') {
+                    $name = 'Form ' . $form_id;
+                }
+
+                $grouped[$key] = [
+                    'date' => $day,
+                    'form_id' => $form_id,
+                    'form_name' => $name,
+                    'referrer_host' => $host,
+                    'submission_count' => 0,
+                ];
+
+                if ($utm !== null && $utm !== '') {
+                    $grouped[$key]['utm_source'] = $utm;
+                }
+            }
+
+            $grouped[$key]['submission_count'] += $count;
+        }
+
+        return array_values($grouped);
     }
 
     /**
