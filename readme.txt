@@ -3,7 +3,7 @@ Contributors: around
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 1.0.5
+Stable tag: 1.0.6
 License: GPLv2 or later
 
 Push Quform submission metadata to Around Form Stats. No personal form field data is transmitted.
@@ -17,6 +17,7 @@ Around Form Stats connects WordPress + Quform sites to a central Laravel dashboa
 * Sends metadata-only batches to the API
 * Heartbeats for connection health
 * Enrollment key exchange for per-site API tokens
+* Sends referring host / UTM source for traffic channel stats (no full URLs with query strings)
 
 No names, emails, messages, or IP addresses are sent.
 
@@ -47,6 +48,10 @@ A Quform submission that passed validation and completed normal form processing.
 Events stay in a local queue and are retried by WP-Cron and on the next successful opportunity.
 
 == Changelog ==
+
+= 1.0.6 =
+* Send referring host and UTM source with live submission events for traffic channel stats
+* Backfill historical referring hosts from Quform entry metadata (forces re-sync on upgrade)
 
 = 1.0.5 =
 * Fix history sync failing with "The rows field is required" when registering forms
