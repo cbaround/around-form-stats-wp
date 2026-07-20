@@ -44,10 +44,15 @@ final class Attribution
             ];
         }
 
+        $filtered_host = isset($filtered['referrer_host'])
+            ? self::host_from_url((string) $filtered['referrer_host']) ?: self::sanitize_host((string) $filtered['referrer_host'])
+            : $host;
+        if ($filtered_host !== '' && $site_host !== '' && $filtered_host === $site_host) {
+            $filtered_host = '';
+        }
+
         return [
-            'referrer_host' => isset($filtered['referrer_host'])
-                ? self::host_from_url((string) $filtered['referrer_host']) ?: self::sanitize_host((string) $filtered['referrer_host'])
-                : $host,
+            'referrer_host' => $filtered_host,
             'utm_source' => isset($filtered['utm_source'])
                 ? self::sanitize_utm((string) $filtered['utm_source'])
                 : $utm,
@@ -203,7 +208,7 @@ final class Attribution
 
         foreach ($candidates as $candidate) {
             $candidate = trim((string) $candidate);
-            if ($candidate !== '' && strcasecmp($candidate, 'Not set') !== 0) {
+            if (self::host_from_url($candidate) !== '') {
                 return $candidate;
             }
         }
@@ -216,12 +221,9 @@ final class Attribution
      */
     private static function find_utm_source($form, string $referrer_url): ?string
     {
-        foreach (['utm_source', 'source'] as $key) {
-            $value = self::form_value($form, $key);
-            $utm = self::sanitize_utm($value);
-            if ($utm !== null) {
-                return $utm;
-            }
+        $utm = self::sanitize_utm(self::form_value($form, 'utm_source'));
+        if ($utm !== null) {
+            return $utm;
         }
 
         if (isset($_GET['utm_source']) && is_string($_GET['utm_source'])) {

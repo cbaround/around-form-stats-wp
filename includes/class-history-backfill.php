@@ -242,8 +242,15 @@ final class HistoryBackfill
                 continue;
             }
 
+            $compatibility_row = $chunk_sources[0];
             $result = $client->post('/api/v1/submissions/history', [
-                'rows' => [],
+                // Older API builds require at least one daily row in every request.
+                'rows' => [[
+                    'date' => $compatibility_row['date'],
+                    'form_id' => $compatibility_row['form_id'],
+                    'form_name' => $compatibility_row['form_name'],
+                    'submission_count' => $compatibility_row['submission_count'],
+                ]],
                 'source_rows' => $chunk_sources,
                 'source' => 'quform_referring_urls',
                 'mode' => 'fill_missing',
@@ -427,21 +434,28 @@ final class HistoryBackfill
         }
 
         $has_status = in_array('status', $columns, true);
-        $status_filter = $has_status
-            ? "AND (status IS NULL OR status = '' OR LOWER(status) NOT IN ('trash','deleted','spam'))"
-            : '';
+        $queries = $has_status
+            ? ["AND (status IS NULL OR status = '' OR LOWER(status) NOT IN ('trash','deleted','spam'))", '']
+            : [''];
 
-        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-        $results = $wpdb->get_results(
-            "SELECT form_id, DATE({$date_column}) AS day, referring_url, COUNT(*) AS submission_count
-             FROM {$entries_table}
-             WHERE {$date_column} IS NOT NULL
-               AND {$date_column} != '0000-00-00 00:00:00'
-               {$status_filter}
-             GROUP BY form_id, DATE({$date_column}), referring_url
-             ORDER BY day ASC",
-            ARRAY_A
-        );
+        $results = [];
+        foreach ($queries as $status_filter) {
+            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+            $results = $wpdb->get_results(
+                "SELECT form_id, DATE({$date_column}) AS day, referring_url, COUNT(*) AS submission_count
+                 FROM {$entries_table}
+                 WHERE {$date_column} IS NOT NULL
+                   AND {$date_column} != '0000-00-00 00:00:00'
+                   {$status_filter}
+                 GROUP BY form_id, DATE({$date_column}), referring_url
+                 ORDER BY day ASC",
+                ARRAY_A
+            );
+
+            if (is_array($results) && $results !== []) {
+                break;
+            }
+        }
 
         if (! is_array($results)) {
             return [];
